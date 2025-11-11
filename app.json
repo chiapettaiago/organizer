@@ -1,0 +1,32 @@
+{
+  "name": "Gmail Organizer Pro",
+  "description": "Organize seus e-mails do Gmail automaticamente com Inteligência Artificial",
+  "repository": "https://github.com/seu-usuario/gmail-organizer-pro",
+  "logo": "https://cdn-icons-png.flaticon.com/512/5968/5968534.png",
+  "keywords": ["gmail", "email", "organizer", "ai", "automation", "streamlit"],
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "env": {
+    "STREAMLIT_SERVER_HEADLESS": {
+      "description": "Run Streamlit in headless mode",
+      "value": "true"
+    },
+    "STREAMLIT_SERVER_PORT": {
+      "description": "Port for Streamlit server",
+      "value": "8501"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "addons": [],
+  "scripts": {
+    "postdeploy": "echo 'Deploy realizado com sucesso!'"
+  }
+}
