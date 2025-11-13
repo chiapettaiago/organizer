@@ -383,9 +383,9 @@ async function carregarCredenciais() {
         
         if (data.success && data.gmail_email) {
             document.getElementById('email').value = data.gmail_email;
-            // Não preenche a senha, mas mostra que existe
-            if (data.has_password) {
-                document.getElementById('senha').placeholder = '••••••••••••••••';
+            // Preenche a senha também
+            if (data.has_password && data.gmail_password) {
+                document.getElementById('senha').value = data.gmail_password;
                 document.getElementById('btn-remover-creds').style.display = 'inline-block';
             }
         }

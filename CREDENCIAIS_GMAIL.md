@@ -15,7 +15,7 @@ O sistema agora permite que os usuários **salvem suas credenciais do Gmail** (e
 ### 2. **Carregar Credenciais Automáticas**
 - Ao fazer login, o sistema carrega automaticamente as credenciais salvas
 - Campo de e-mail é preenchido automaticamente
-- Campo de senha mostra placeholder "••••••••••••••••" indicando que existe senha salva
+- **Campo de senha é preenchido automaticamente com a senha descriptografada**
 - Usuário não precisa digitar novamente
 
 ### 3. **Remover Credenciais**
@@ -49,16 +49,19 @@ CREATE TABLE users (
 ## API Endpoints
 
 ### GET `/api/gmail/credenciais`
-Retorna as credenciais salvas do usuário (sem expor a senha).
+Retorna as credenciais salvas do usuário (incluindo a senha descriptografada).
 
 **Resposta:**
 ```json
 {
     "success": true,
     "gmail_email": "usuario@gmail.com",
+    "gmail_password": "senha_de_aplicativo",
     "has_password": true
 }
 ```
+
+**⚠️ Segurança:** A senha é retornada apenas para o usuário autenticado que é dono das credenciais.
 
 ### POST `/api/gmail/credenciais`
 Salva novas credenciais do Gmail.
@@ -178,9 +181,11 @@ Senha:  [         ]
 ```
 🔐 Credenciais do Gmail
 E-mail: [usuario@gmail.com]
-Senha:  [••••••••••••••••]
+Senha:  [senha_de_aplicativo_aqui]
 [💾 Salvar Credenciais] [🗑️ Remover]
 ```
+
+**Nota:** Ambos os campos são preenchidos automaticamente quando existem credenciais salvas.
 
 ## Fluxo de Uso
 

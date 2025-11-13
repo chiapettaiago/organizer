@@ -1590,12 +1590,14 @@ def obter_credenciais_gmail_route():
         return jsonify({
             'success': True,
             'gmail_email': credenciais['gmail_email'],
-            'has_password': True  # Não retorna a senha, apenas confirma que existe
+            'gmail_password': credenciais['gmail_password'],  # Retorna a senha descriptografada
+            'has_password': True
         })
     else:
         return jsonify({
             'success': True,
             'gmail_email': None,
+            'gmail_password': None,
             'has_password': False
         })
 
