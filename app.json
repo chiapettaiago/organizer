@@ -1,22 +1,18 @@
 {
-  "name": "Gmail Organizer Pro",
-  "description": "Organize seus e-mails do Gmail automaticamente com Inteligência Artificial",
-  "repository": "https://github.com/seu-usuario/gmail-organizer-pro",
+  "name": "MailNest - Organizador de Emails",
+  "description": "Sistema inteligente de organização de emails do Gmail com IA e WebSocket em tempo real",
+  "repository": "https://github.com/chiapettaiago/organizer",
   "logo": "https://cdn-icons-png.flaticon.com/512/5968/5968534.png",
-  "keywords": ["gmail", "email", "organizer", "ai", "automation", "streamlit"],
+  "keywords": ["flask", "gmail", "email", "organizer", "ai", "websocket", "automation"],
   "buildpacks": [
     {
       "url": "heroku/python"
     }
   ],
   "env": {
-    "STREAMLIT_SERVER_HEADLESS": {
-      "description": "Run Streamlit in headless mode",
-      "value": "true"
-    },
-    "STREAMLIT_SERVER_PORT": {
-      "description": "Port for Streamlit server",
-      "value": "8501"
+    "DEBUG": {
+      "description": "Enable Flask debug mode (use False in production)",
+      "value": "False"
     }
   },
   "formation": {
@@ -27,6 +23,6 @@
   },
   "addons": [],
   "scripts": {
-    "postdeploy": "echo 'Deploy realizado com sucesso!'"
+    "postdeploy": "echo 'MailNest deployed successfully!'"
   }
 }

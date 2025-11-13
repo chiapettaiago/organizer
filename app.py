@@ -60,12 +60,19 @@ def classificar_email(assunto, corpo):
     for categoria, palavras in categorias.items():
         if any(p in texto for p in palavras):
             return categoria
-    blob = TextBlob(texto)
-    sentimento = blob.sentiment.polarity
-    if sentimento < -0.1:
-        return "Problemas"
-    elif sentimento > 0.3:
-        return "Positivos"
+    
+    # Análise de sentimento com fallback
+    try:
+        blob = TextBlob(texto)
+        sentimento = blob.sentiment.polarity
+        if sentimento < -0.1:
+            return "Problemas"
+        elif sentimento > 0.3:
+            return "Positivos"
+    except Exception:
+        # Se TextBlob falhar, retorna categoria padrão
+        pass
+    
     return "Neutros"
 
 def conectar_email(email_usuario, senha, log_callback=None):
@@ -668,6 +675,7 @@ def processar_duplicatas(email_usuario, senha):
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, debug=True, host='0.0.0.0', port=port)
+    debug = os.environ.get('DEBUG', 'False').lower() == 'true'
+    socketio.run(app, debug=debug, host='0.0.0.0', port=port)
 
 

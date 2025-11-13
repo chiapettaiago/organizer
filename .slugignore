@@ -1,0 +1,18 @@
+# Arquivos desnecessários no Heroku
+*.md
+!README.md
+*.bat
+.git
+.gitignore
+.vscode
+.idea
+__pycache__
+*.pyc
+*.pyo
+*.log
+emails_organizados/
+*.txt.bak
+DEPLOY_HEROKU.md
+QUICKSTART_FLASK.md
+FLASK_VS_STREAMLIT.md
+organizador.py
