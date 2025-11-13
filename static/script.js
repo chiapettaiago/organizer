@@ -1,10 +1,65 @@
 // Conexão WebSocket
 const socket = io();
 
-// Variáveis globais
+// Variáveis globais (serão sincronizadas com o banco de dados)
 let totalOrganizados = 0;
 let totalDuplicatas = 0;
 let totalCategorias = 0;
+
+// ==================== ESTATÍSTICAS ====================
+async function carregarEstatisticas() {
+    try {
+        const response = await fetch('/api/estatisticas');
+        const data = await response.json();
+        
+        if (data.success && data.estatisticas) {
+            const stats = data.estatisticas;
+            totalOrganizados = stats.emails_organizados || 0;
+            totalDuplicatas = stats.duplicatas_removidas || 0;
+            totalCategorias = stats.categorias_criadas || 0;
+            
+            // Atualiza a interface
+            atualizarMetricas();
+            
+            console.log('✅ Estatísticas carregadas:', stats);
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar estatísticas:', error);
+    }
+}
+
+function atualizarMetricas() {
+    document.getElementById('metric-total').textContent = totalOrganizados;
+    document.getElementById('metric-duplicatas').textContent = totalDuplicatas;
+    document.getElementById('metric-categorias').textContent = totalCategorias;
+}
+
+async function resetarEstatisticas() {
+    if (!confirm('🗑️ Deseja realmente resetar todas as estatísticas?\n\nEsta ação não pode ser desfeita!')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/estatisticas/resetar', {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            totalOrganizados = 0;
+            totalDuplicatas = 0;
+            totalCategorias = 0;
+            atualizarMetricas();
+            alert('✅ Estatísticas resetadas com sucesso!');
+        } else {
+            alert('❌ Erro ao resetar estatísticas: ' + (data.error || 'Erro desconhecido'));
+        }
+    } catch (error) {
+        console.error('Erro ao resetar estatísticas:', error);
+        alert('❌ Erro ao resetar estatísticas. Veja o console para detalhes.');
+    }
+}
 
 // Função auxiliar para garantir scroll automático
 function forcarScrollParaBaixo(containerId) {
@@ -275,41 +330,36 @@ socket.on('progresso', function(data) {
 });
 
 socket.on('conclusao', function(data) {
-    // Atualiza métricas
-    totalOrganizados = data.total;
-    totalCategorias = Object.keys(data.categorias || {}).length;
-    totalDuplicatas = data.duplicatas || 0;
-
-    document.getElementById('metric-total').textContent = totalOrganizados;
-    document.getElementById('metric-categorias').textContent = totalCategorias;
-    document.getElementById('metric-duplicatas').textContent = totalDuplicatas;
-    document.getElementById('metric-status').textContent = '✅';
-
-    // Mostra resumo
-    let resumo = `\n✅ ORGANIZAÇÃO CONCLUÍDA!\n`;
-    resumo += `📊 Total: ${data.total} e-mails\n`;
-    resumo += `📁 Categorias: ${totalCategorias}\n`;
-    
-    if (data.categorias) {
-        resumo += `\nDistribuição:\n`;
-        for (const [categoria, count] of Object.entries(data.categorias)) {
-            resumo += `  • ${categoria}: ${count} e-mails\n`;
+    // As estatísticas foram atualizadas no backend, então recarregamos do servidor
+    carregarEstatisticas().then(() => {
+        document.getElementById('metric-status').textContent = '✅';
+        
+        // Mostra resumo
+        let resumo = `\n✅ ORGANIZAÇÃO CONCLUÍDA!\n`;
+        resumo += `📊 Total: ${data.total} e-mails\n`;
+        resumo += `📁 Categorias: ${Object.keys(data.categorias || {}).length}\n`;
+        
+        if (data.categorias) {
+            resumo += `\nDistribuição:\n`;
+            for (const [categoria, count] of Object.entries(data.categorias)) {
+                resumo += `  • ${categoria}: ${count} e-mails\n`;
+            }
         }
-    }
-    
-    if (data.duplicatas > 0) {
-        resumo += `\n🗑️ Duplicatas removidas: ${data.duplicatas}\n`;
-    }
+        
+        if (data.duplicatas > 0) {
+            resumo += `\n🗑️ Duplicatas removidas: ${data.duplicatas}\n`;
+        }
 
-    alert(resumo);
+        alert(resumo);
+    });
 });
 
 socket.on('duplicatas_resultado', function(data) {
-    totalDuplicatas += data.duplicatas;
-    document.getElementById('metric-duplicatas').textContent = totalDuplicatas;
-    document.getElementById('metric-status').textContent = '✅';
-
-    alert(`✅ Verificação concluída!\n🗑️ ${data.duplicatas} duplicatas removidas.`);
+    // As estatísticas foram atualizadas no backend, então recarregamos do servidor
+    carregarEstatisticas().then(() => {
+        document.getElementById('metric-status').textContent = '✅';
+        alert(`✅ Verificação concluída!\n🗑️ ${data.duplicatas} duplicatas removidas.`);
+    });
 });
 
 socket.on('erro', function(data) {
@@ -466,4 +516,6 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('MailNest carregado!');
     // Carregar credenciais salvas ao iniciar
     carregarCredenciais();
+    // Carregar estatísticas salvas ao iniciar
+    carregarEstatisticas();
 });

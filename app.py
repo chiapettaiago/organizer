@@ -88,6 +88,18 @@ def init_database():
         )
     ''')
     
+    # Tabela de estatísticas do usuário
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_statistics (
+            user_id TEXT PRIMARY KEY,
+            emails_organizados INTEGER DEFAULT 0,
+            duplicatas_removidas INTEGER DEFAULT 0,
+            categorias_criadas INTEGER DEFAULT 0,
+            ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    
     # Índices para melhor performance
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_id ON user_activities(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON user_activities(timestamp)')
@@ -411,6 +423,111 @@ def remover_credenciais_gmail(user_id):
     except Exception as e:
         print(f"Erro ao remover credenciais Gmail: {e}")
         return False
+
+# ===============================
+# ESTATÍSTICAS DO USUÁRIO
+# ===============================
+def obter_estatisticas_usuario(user_id):
+    """Obtém as estatísticas do usuário"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT emails_organizados, duplicatas_removidas, categorias_criadas, ultima_atualizacao
+            FROM user_statistics WHERE user_id = ?
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'emails_organizados': row[0],
+                'duplicatas_removidas': row[1],
+                'categorias_criadas': row[2],
+                'ultima_atualizacao': row[3]
+            }
+        else:
+            # Se não existe, criar registro zerado
+            criar_estatisticas_usuario(user_id)
+            return {
+                'emails_organizados': 0,
+                'duplicatas_removidas': 0,
+                'categorias_criadas': 0,
+                'ultima_atualizacao': datetime.datetime.now().isoformat()
+            }
+    except Exception as e:
+        print(f"Erro ao obter estatísticas: {e}")
+        traceback.print_exc()
+        return None
+
+def criar_estatisticas_usuario(user_id):
+    """Cria registro de estatísticas para um novo usuário"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO user_statistics (user_id, emails_organizados, duplicatas_removidas, categorias_criadas)
+            VALUES (?, 0, 0, 0)
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao criar estatísticas: {e}")
+        return False
+
+def atualizar_estatisticas_usuario(user_id, emails_organizados=0, duplicatas_removidas=0, categorias_criadas=0, incrementar=True):
+    """Atualiza as estatísticas do usuário"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Garantir que existe registro
+        criar_estatisticas_usuario(user_id)
+        
+        if incrementar:
+            # Incrementar valores existentes
+            cursor.execute('''
+                UPDATE user_statistics 
+                SET emails_organizados = emails_organizados + ?,
+                    duplicatas_removidas = duplicatas_removidas + ?,
+                    categorias_criadas = CASE 
+                        WHEN ? > categorias_criadas THEN ?
+                        ELSE categorias_criadas
+                    END,
+                    ultima_atualizacao = ?
+                WHERE user_id = ?
+            ''', (emails_organizados, duplicatas_removidas, categorias_criadas, categorias_criadas, 
+                  datetime.datetime.now().isoformat(), user_id))
+        else:
+            # Definir valores absolutos
+            cursor.execute('''
+                UPDATE user_statistics 
+                SET emails_organizados = ?,
+                    duplicatas_removidas = ?,
+                    categorias_criadas = ?,
+                    ultima_atualizacao = ?
+                WHERE user_id = ?
+            ''', (emails_organizados, duplicatas_removidas, categorias_criadas, 
+                  datetime.datetime.now().isoformat(), user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✓ Estatísticas atualizadas para {user_id}: +{emails_organizados} emails, +{duplicatas_removidas} duplicatas, {categorias_criadas} categorias")
+        return True
+    except Exception as e:
+        print(f"Erro ao atualizar estatísticas: {e}")
+        traceback.print_exc()
+        return False
+
+def resetar_estatisticas_usuario(user_id):
+    """Reseta as estatísticas do usuário para zero"""
+    return atualizar_estatisticas_usuario(user_id, 0, 0, 0, incrementar=False)
 
 # ===============================
 # LOGS E HISTÓRICO DE ATIVIDADES
@@ -1655,6 +1772,47 @@ def remover_credenciais_gmail_route():
     else:
         return jsonify({'error': 'Erro ao remover credenciais'}), 500
 
+# ===============================
+# ROTAS DE ESTATÍSTICAS
+# ===============================
+@app.route('/api/estatisticas', methods=['GET'])
+@login_required
+def obter_estatisticas_route():
+    """Retorna as estatísticas do usuário"""
+    user_id = session.get('user_id')
+    stats = obter_estatisticas_usuario(user_id)
+    
+    if stats:
+        return jsonify({
+            'success': True,
+            'estatisticas': stats
+        })
+    else:
+        return jsonify({'error': 'Erro ao obter estatísticas'}), 500
+
+@app.route('/api/estatisticas/resetar', methods=['POST'])
+@login_required
+def resetar_estatisticas_route():
+    """Reseta as estatísticas do usuário para zero"""
+    user_id = session.get('user_id')
+    
+    if resetar_estatisticas_usuario(user_id):
+        # Registrar reset
+        registrar_atividade(
+            user_id=user_id,
+            action='statistics_reset',
+            details={
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Estatísticas resetadas com sucesso'
+        })
+    else:
+        return jsonify({'error': 'Erro ao resetar estatísticas'}), 500
+
 @app.route('/api/organizar', methods=['POST'])
 @login_required
 def organizar():
@@ -1895,6 +2053,15 @@ def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None, user_id
                 }
             )
             
+            # Atualiza estatísticas do usuário
+            atualizar_estatisticas_usuario(
+                user_id=user_id,
+                emails_organizados=emails_organizados,
+                duplicatas_removidas=duplicatas,
+                categorias_criadas=len(categorias_criadas),
+                incrementar=True
+            )
+            
         adicionar_log(f"✅ Organização concluída! {emails_movidos}/{total} e-mails processados")
         atualizar_progresso(1.0, "✅ Concluído!")
         
@@ -1974,6 +2141,15 @@ def processar_duplicatas(email_usuario, senha, user_id=None):
                     'duplicatas_encontradas': duplicatas,
                     'timestamp': datetime.datetime.now().isoformat()
                 }
+            )
+            
+            # Atualiza estatísticas do usuário
+            atualizar_estatisticas_usuario(
+                user_id=user_id,
+                emails_organizados=0,
+                duplicatas_removidas=duplicatas,
+                categorias_criadas=0,
+                incrementar=True
             )
         
         atualizar_progresso(1.0, "✅ Concluído!")
