@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, Response, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, session, Response, redirect, url_for, flash, has_request_context
 from flask_socketio import SocketIO, emit
 import imaplib
 import email
@@ -13,6 +13,8 @@ import json
 from functools import wraps
 import secrets
 import hashlib
+import sqlite3
+import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)
@@ -34,34 +36,564 @@ USERS = {
 # ===============================
 # CÓDIGOS DE CONVITE
 # ===============================
-INVITE_CODES = {}  # {codigo: {'created_by': username, 'created_at': datetime, 'used': False, 'used_by': None}}
+# BANCO DE DADOS SQLITE
+# ===============================
+DB_PATH = 'organizer.db'
 
-def gerar_codigo_convite(username):
-    """Gera um código de convite único"""
-    codigo = secrets.token_urlsafe(16)[:12].upper()
-    INVITE_CODES[codigo] = {
-        'created_by': username,
-        'created_at': datetime.datetime.now(),
-        'used': False,
-        'used_by': None
-    }
-    return codigo
+def init_database():
+    """Inicializa o banco de dados SQLite com todas as tabelas"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Tabela de usuários
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            name TEXT NOT NULL,
+            email TEXT,
+            is_admin INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP,
+            gmail_email TEXT,
+            gmail_password TEXT
+        )
+    ''')
+    
+    # Tabela de códigos de convite
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS invite_codes (
+            code TEXT PRIMARY KEY,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            used INTEGER DEFAULT 0,
+            used_by TEXT,
+            used_at TIMESTAMP,
+            FOREIGN KEY (created_by) REFERENCES users(user_id)
+        )
+    ''')
+    
+    # Tabela de atividades
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            action TEXT NOT NULL,
+            details TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    
+    # Índices para melhor performance
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_id ON user_activities(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON user_activities(timestamp)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_action ON user_activities(action)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_invite_created_by ON invite_codes(created_by)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_invite_used ON invite_codes(used)')
+    
+    # Inserir usuário admin padrão se não existir
+    cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', ('admin',))
+    if cursor.fetchone()[0] == 0:
+        admin_password = hashlib.sha256('admin123'.encode()).hexdigest()
+        cursor.execute('''
+            INSERT INTO users (user_id, password_hash, name, email, is_admin)
+            VALUES (?, ?, ?, ?, ?)
+        ''', ('admin', admin_password, 'Administrador', 'admin@organizer.local', 1))
+    
+    conn.commit()
+    conn.close()
 
-def validar_codigo_convite(codigo):
-    """Valida se o código existe e não foi usado"""
-    codigo = codigo.upper().strip()
-    if codigo in INVITE_CODES and not INVITE_CODES[codigo]['used']:
+# Inicializar banco ao carregar app
+init_database()
+
+# ===============================
+# FUNÇÕES DE GERENCIAMENTO DE USUÁRIOS
+# ===============================
+def criar_usuario(user_id, password, name, email=None, is_admin=False):
+    """Cria um novo usuário no banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        cursor.execute('''
+            INSERT INTO users (user_id, password_hash, name, email, is_admin, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, password_hash, name, email, 1 if is_admin else 0, datetime.datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # Usuário já existe
+    except Exception as e:
+        print(f"Erro ao criar usuário: {e}")
+        return False
+
+def obter_usuario(user_id):
+    """Obtém dados de um usuário do banco"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, password_hash, name, email, is_admin, created_at, last_login
+            FROM users WHERE user_id = ?
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'user_id': row[0],
+                'password': row[1],
+                'nome': row[2],
+                'email': row[3],
+                'is_admin': bool(row[4]),
+                'criado_em': row[5],
+                'last_login': row[6]
+            }
+        return None
+    except Exception as e:
+        print(f"Erro ao obter usuário: {e}")
+        return None
+
+def obter_todos_usuarios():
+    """Retorna todos os usuários do sistema"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, name, email, is_admin, created_at, last_login
+            FROM users
+            ORDER BY created_at DESC
+        ''')
+        
+        usuarios = {}
+        for row in cursor.fetchall():
+            usuarios[row[0]] = {
+                'nome': row[1],
+                'email': row[2],
+                'is_admin': bool(row[3]),
+                'criado_em': row[4],
+                'last_login': row[5]
+            }
+        
+        conn.close()
+        return usuarios
+    except Exception as e:
+        print(f"Erro ao obter usuários: {e}")
+        return {}
+
+def atualizar_ultimo_login(user_id):
+    """Atualiza o timestamp do último login"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users SET last_login = ? WHERE user_id = ?
+        ''', (datetime.datetime.now().isoformat(), user_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao atualizar último login: {e}")
+        return False
+
+def validar_credenciais(user_id, password):
+    """Valida credenciais de login"""
+    usuario = obter_usuario(user_id)
+    if not usuario:
+        return False
+    
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    return usuario['password'] == password_hash
+
+# ===============================
+# FUNÇÕES DE CÓDIGOS DE CONVITE
+# ===============================
+def gerar_codigo_convite(created_by):
+    """Gera um novo código de convite no banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        codigo = secrets.token_urlsafe(16)[:12].upper()
+        
+        cursor.execute('''
+            INSERT INTO invite_codes (code, created_by, created_at, used, used_by, used_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (codigo, created_by, datetime.datetime.now().isoformat(), 0, None, None))
+        
+        conn.commit()
+        conn.close()
+        return codigo
+    except Exception as e:
+        print(f"Erro ao gerar código de convite: {e}")
+        return None
+
+def obter_codigo_convite(code):
+    """Obtém informações de um código de convite"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT code, created_by, created_at, used, used_by, used_at
+            FROM invite_codes WHERE code = ?
+        ''', (code.upper().strip(),))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'code': row[0],
+                'created_by': row[1],
+                'created_at': row[2],
+                'used': bool(row[3]),
+                'used_by': row[4],
+                'used_at': row[5]
+            }
+        return None
+    except Exception as e:
+        print(f"Erro ao obter código de convite: {e}")
+        return None
+
+def obter_todos_convites():
+    """Retorna todos os códigos de convite"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT code, created_by, created_at, used, used_by, used_at
+            FROM invite_codes
+            ORDER BY created_at DESC
+        ''')
+        
+        convites = {}
+        for row in cursor.fetchall():
+            convites[row[0]] = {
+                'created_by': row[1],
+                'created_at': row[2],
+                'used': bool(row[3]),
+                'used_by': row[4],
+                'used_at': row[5]
+            }
+        
+        conn.close()
+        return convites
+    except Exception as e:
+        print(f"Erro ao obter convites: {e}")
+        return {}
+
+def marcar_convite_usado(code, used_by):
+    """Marca um código de convite como usado"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE invite_codes 
+            SET used = 1, used_by = ?, used_at = ?
+            WHERE code = ?
+        ''', (used_by, datetime.datetime.now().isoformat(), code.upper().strip()))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao marcar convite como usado: {e}")
+        return False
+
+def revogar_codigo_convite(code):
+    """Remove um código de convite do banco"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM invite_codes WHERE code = ?', (code.upper().strip(),))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao revogar código: {e}")
+        return False
+
+def validar_codigo_convite(code):
+    """Valida se um código de convite existe e não foi usado"""
+    convite = obter_codigo_convite(code)
+    if convite and not convite['used']:
         return True
     return False
 
-def marcar_codigo_usado(codigo, username):
-    """Marca um código como usado"""
-    codigo = codigo.upper().strip()
-    if codigo in INVITE_CODES:
-        INVITE_CODES[codigo]['used'] = True
-        INVITE_CODES[codigo]['used_by'] = username
-        INVITE_CODES[codigo]['used_at'] = datetime.datetime.now()
+# ===============================
+# FUNÇÕES DE CREDENCIAIS DO GMAIL
+# ===============================
+def salvar_credenciais_gmail(user_id, gmail_email, gmail_password):
+    """Salva as credenciais do Gmail do usuário (criptografia básica)"""
+    try:
+        import base64
+        # Criptografia básica com base64 (em produção, use cryptography ou keyring)
+        encrypted_password = base64.b64encode(gmail_password.encode()).decode()
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users 
+            SET gmail_email = ?, gmail_password = ?
+            WHERE user_id = ?
+        ''', (gmail_email, encrypted_password, user_id))
+        
+        conn.commit()
+        conn.close()
         return True
+    except Exception as e:
+        print(f"Erro ao salvar credenciais Gmail: {e}")
+        traceback.print_exc()
+        return False
+
+def obter_credenciais_gmail(user_id):
+    """Obtém as credenciais do Gmail do usuário"""
+    try:
+        import base64
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT gmail_email, gmail_password
+            FROM users WHERE user_id = ?
+        ''', (user_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0] and row[1]:
+            # Descriptografar senha
+            decrypted_password = base64.b64decode(row[1].encode()).decode()
+            return {
+                'gmail_email': row[0],
+                'gmail_password': decrypted_password
+            }
+        return None
+    except Exception as e:
+        print(f"Erro ao obter credenciais Gmail: {e}")
+        traceback.print_exc()
+        return None
+
+def remover_credenciais_gmail(user_id):
+    """Remove as credenciais do Gmail do usuário"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users 
+            SET gmail_email = NULL, gmail_password = NULL
+            WHERE user_id = ?
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao remover credenciais Gmail: {e}")
+        return False
+
+# ===============================
+# LOGS E HISTÓRICO DE ATIVIDADES
+# ===============================
+def registrar_atividade(user_id, action, details=None, ip_address=None):
+    """Registra uma atividade do usuário no banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        timestamp = datetime.datetime.now().isoformat()
+        details_json = json.dumps(details) if details else '{}'
+        
+        # Tentar obter IP e user agent do request, com fallback
+        if has_request_context():
+            ip = ip_address or request.remote_addr
+            user_agent = request.headers.get('User-Agent', 'unknown')
+        else:
+            ip = ip_address or 'system'
+            user_agent = 'system'
+        
+        cursor.execute('''
+            INSERT INTO user_activities (user_id, timestamp, action, details, ip_address, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, timestamp, action, details_json, ip, user_agent))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✓ Atividade registrada: {user_id} - {action}")  # Debug
+        
+        return {
+            'timestamp': timestamp,
+            'action': action,
+            'details': details or {},
+            'ip_address': ip,
+            'user_agent': user_agent
+        }
+    except Exception as e:
+        print(f"✗ Erro ao registrar atividade: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def obter_historico_usuario(user_id, limit=100):
+    """Retorna o histórico de atividades de um usuário do banco de dados"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT timestamp, action, details, ip_address, user_agent
+            FROM user_activities
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (user_id, limit))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        atividades = []
+        for row in rows:
+            atividades.append({
+                'timestamp': row[0],
+                'action': row[1],
+                'details': json.loads(row[2]) if row[2] else {},
+                'ip_address': row[3],
+                'user_agent': row[4]
+            })
+        
+        # Retornar em ordem cronológica (mais antiga primeiro)
+        return list(reversed(atividades))
+    except Exception as e:
+        print(f"Erro ao obter histórico: {e}")
+        return []
+
+def obter_total_atividades_usuario(user_id):
+    """Retorna o total de atividades registradas de um usuário"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM user_activities WHERE user_id = ?
+        ''', (user_id,))
+        
+        total = cursor.fetchone()[0]
+        conn.close()
+        
+        return total
+    except Exception as e:
+        print(f"Erro ao contar atividades: {e}")
+        return 0
+
+def obter_todas_atividades(limit=1000):
+    """Retorna todas as atividades de todos os usuários"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, timestamp, action, details, ip_address, user_agent
+            FROM user_activities
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        atividades = []
+        for row in rows:
+            atividades.append({
+                'user_id': row[0],
+                'timestamp': row[1],
+                'action': row[2],
+                'details': json.loads(row[3]) if row[3] else {},
+                'ip_address': row[4],
+                'user_agent': row[5]
+            })
+        
+        return atividades
+    except Exception as e:
+        print(f"Erro ao obter todas atividades: {e}")
+        return []
+
+def limpar_atividades_antigas(dias=90):
+    """Remove atividades mais antigas que X dias"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        data_limite = (datetime.datetime.now() - datetime.timedelta(days=dias)).isoformat()
+        
+        cursor.execute('''
+            DELETE FROM user_activities WHERE timestamp < ?
+        ''', (data_limite,))
+        
+        deletados = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        return deletados
+    except Exception as e:
+        print(f"Erro ao limpar atividades antigas: {e}")
+        return 0
+
+def exportar_atividades_csv(user_id=None):
+    """Exporta atividades para formato CSV"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        if user_id:
+            cursor.execute('''
+                SELECT user_id, timestamp, action, details, ip_address, user_agent
+                FROM user_activities
+                WHERE user_id = ?
+                ORDER BY timestamp DESC
+            ''', (user_id,))
+        else:
+            cursor.execute('''
+                SELECT user_id, timestamp, action, details, ip_address, user_agent
+                FROM user_activities
+                ORDER BY timestamp DESC
+            ''')
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        # Criar CSV
+        csv_lines = ['User ID,Timestamp,Action,Details,IP Address,User Agent']
+        for row in rows:
+            details = row[3].replace('"', '""')  # Escape aspas
+            csv_lines.append(f'"{row[0]}","{row[1]}","{row[2]}","{details}","{row[4]}","{row[5]}"')
+        
+        return '\n'.join(csv_lines)
+    except Exception as e:
+        print(f"Erro ao exportar CSV: {e}")
+        return None
+
+# Funções antigas removidas - agora usamos as funções SQLite acima
     return False
 
 # ===============================
@@ -119,9 +651,9 @@ def admin_required(f):
             flash('Acesso negado. Apenas administradores.', 'error')
             return redirect(url_for('index'))
         
-        # Verificar se tem flag is_admin na sessão ou no USERS
+        # Verificar se tem flag is_admin na sessão ou no banco
         is_admin_session = session.get('is_admin', False)
-        user = USERS.get(session.get('user_id'))
+        user = obter_usuario(session.get('user_id'))
         is_admin_user = user.get('is_admin', False) if user else False
         
         if not (is_admin_session or is_admin_user):
@@ -541,6 +1073,16 @@ def login():
             # Código válido - redirecionar para página de registro
             codigo_upper = invite_code.upper()
             
+            # Registrar validação de convite
+            registrar_atividade(
+                user_id=f'invite_{codigo_upper}',
+                action='invite_validated',
+                details={
+                    'invite_code': codigo_upper,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
+            
             # Armazenar código na sessão temporariamente para a página de registro
             session['pending_invite_code'] = codigo_upper
             
@@ -552,6 +1094,17 @@ def login():
                 })
             return redirect(url_for('registro_page'))
         else:
+            # Registrar tentativa de convite inválido
+            registrar_atividade(
+                user_id='unknown',
+                action='invite_failed',
+                details={
+                    'invite_code': invite_code.upper(),
+                    'reason': 'invalid_or_used',
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
+            
             if request.is_json:
                 return jsonify({'error': 'Código de convite inválido ou já utilizado'}), 401
             flash('Código de convite inválido ou já utilizado', 'error')
@@ -568,17 +1121,30 @@ def login():
             flash('Usuário e senha são obrigatórios', 'error')
             return redirect(url_for('login'))
         
-        # Verificar credenciais
-        user = USERS.get(username)
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        if user and user['password'] == password_hash:
+        # Verificar credenciais no banco de dados
+        if validar_credenciais(username, password):
+            user = obter_usuario(username)
+            
+            # Atualizar último login
+            atualizar_ultimo_login(username)
+            
             # Login bem-sucedido
             session.permanent = True
             session['user_id'] = username
-            session['user_name'] = user['name']
+            session['user_name'] = user['nome']
             session['is_guest'] = False
             session['is_admin'] = user.get('is_admin', False)
+            
+            # Registrar login no histórico
+            registrar_atividade(
+                user_id=username,
+                action='login',
+                details={
+                    'method': 'credentials',
+                    'success': True,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
             
             if request.is_json:
                 return jsonify({
@@ -588,7 +1154,18 @@ def login():
                 })
             return redirect(url_for('index'))
         else:
-            # Credenciais inválidas
+            # Credenciais inválidas - registrar tentativa falha
+            registrar_atividade(
+                user_id=username if username else 'unknown',
+                action='login_failed',
+                details={
+                    'method': 'credentials',
+                    'reason': 'invalid_credentials',
+                    'username_attempted': username,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
+            
             if request.is_json:
                 return jsonify({'error': 'Usuário ou senha inválidos'}), 401
             flash('Usuário ou senha inválidos', 'error')
@@ -596,6 +1173,18 @@ def login():
 
 @app.route('/logout')
 def logout():
+    user_id = session.get('user_id')
+    
+    # Registrar logout
+    if user_id:
+        registrar_atividade(
+            user_id=user_id,
+            action='logout',
+            details={
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+    
     session.clear()
     flash('Logout realizado com sucesso', 'success')
     return redirect(url_for('login'))
@@ -638,7 +1227,7 @@ def registrar():
         return jsonify({'error': 'E-mail inválido'}), 400
     
     # Verificar se o email já existe
-    if email in USERS:
+    if obter_usuario(email):
         return jsonify({'error': 'Este e-mail já está cadastrado'}), 400
     
     # Verificar se o código de convite está na sessão
@@ -649,19 +1238,25 @@ def registrar():
     if not validar_codigo_convite(invite_code):
         return jsonify({'error': 'Código de convite inválido ou já utilizado'}), 400
     
-    # Criar novo usuário
-    password_hash = hashlib.sha256(senha.encode()).hexdigest()
-    USERS[email] = {
-        'password': password_hash,
-        'name': nome,
-        'is_admin': False,
-        'created_at': datetime.datetime.now(),
-        'created_via': 'invite',
-        'invite_code': invite_code.upper()
-    }
+    # Criar novo usuário no banco de dados
+    if not criar_usuario(email, senha, nome, email, is_admin=False):
+        return jsonify({'error': 'Erro ao criar usuário'}), 500
     
     # Marcar código como usado
-    marcar_codigo_usado(invite_code, email)
+    marcar_convite_usado(invite_code, email)
+    
+    # Registrar criação de conta
+    registrar_atividade(
+        user_id=email,
+        action='account_created',
+        details={
+            'name': nome,
+            'email': email,
+            'created_via': 'invite',
+            'invite_code': invite_code.upper(),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    )
     
     # Fazer login automático
     session.permanent = True
@@ -669,6 +1264,19 @@ def registrar():
     session['user_name'] = nome
     session['is_guest'] = False
     session['is_admin'] = False
+    
+    # Atualizar último login
+    atualizar_ultimo_login(email)
+    
+    # Registrar primeiro login
+    registrar_atividade(
+        user_id=email,
+        action='first_login',
+        details={
+            'method': 'auto_after_registration',
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    )
     
     # Limpar código pendente
     session.pop('pending_invite_code', None)
@@ -688,16 +1296,39 @@ def registrar():
 @admin_required
 def admin_convites():
     """Página de gerenciamento de códigos de convite"""
+    convites = obter_todos_convites()
     return render_template('admin_convites.html', 
                          user_name=session.get('user_name', 'Admin'),
-                         convites=INVITE_CODES)
+                         convites=convites)
+
+@app.route('/admin/atividades')
+@admin_required
+def admin_atividades():
+    """Página de visualização de atividades dos usuários"""
+    return render_template('admin_atividades.html',
+                         user_name=session.get('user_name', 'Admin'))
 
 @app.route('/api/admin/gerar-convite', methods=['POST'])
 @admin_required
-def gerar_convite():
+def gerar_convite_route():
     """Gera um novo código de convite"""
     try:
-        codigo = gerar_codigo_convite(session.get('user_id'))
+        user_id = session.get('user_id')
+        codigo = gerar_codigo_convite(user_id)
+        
+        if not codigo:
+            return jsonify({'error': 'Erro ao gerar código'}), 500
+        
+        # Registrar geração de convite
+        registrar_atividade(
+            user_id=user_id,
+            action='invite_code_generated',
+            details={
+                'codigo': codigo,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+        
         return jsonify({
             'success': True,
             'codigo': codigo,
@@ -710,35 +1341,60 @@ def gerar_convite():
 @admin_required
 def listar_convites():
     """Lista todos os códigos de convite"""
+    convites_dict = obter_todos_convites()
     convites = []
-    for codigo, info in INVITE_CODES.items():
+    
+    for codigo, info in convites_dict.items():
+        # Converter string ISO para datetime se necessário
+        created_at = info['created_at']
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.datetime.fromisoformat(created_at)
+            except:
+                created_at = datetime.datetime.now()
+        
         convites.append({
             'codigo': codigo,
             'criado_por': info['created_by'],
-            'criado_em': info['created_at'].strftime('%d/%m/%Y %H:%M'),
+            'criado_em': created_at.strftime('%d/%m/%Y %H:%M') if isinstance(created_at, datetime.datetime) else created_at,
             'usado': info['used'],
             'usado_por': info.get('used_by'),
-            'usado_em': info.get('used_at').strftime('%d/%m/%Y %H:%M') if info.get('used_at') else None
+            'usado_em': info.get('used_at')
         })
     
-    # Ordenar por data de criação (mais recentes primeiro)
-    convites.sort(key=lambda x: INVITE_CODES[x['codigo']]['created_at'], reverse=True)
+    # Ordenar por usado (não usados primeiro) e depois por código
+    convites.sort(key=lambda x: (x['usado'], x['codigo']))
     
     return jsonify({
         'success': True,
         'convites': convites,
         'total': len(convites),
-        'usados': sum(1 for c in INVITE_CODES.values() if c['used']),
-        'disponiveis': sum(1 for c in INVITE_CODES.values() if not c['used'])
+        'usados': sum(1 for c in convites if c['usado']),
+        'disponiveis': sum(1 for c in convites if not c['usado'])
     })
 
 @app.route('/api/admin/revogar-convite/<codigo>', methods=['DELETE'])
 @admin_required
-def revogar_convite(codigo):
+def revogar_convite_route(codigo):
     """Revoga (remove) um código de convite"""
     codigo = codigo.upper().strip()
-    if codigo in INVITE_CODES:
-        del INVITE_CODES[codigo]
+    convite = obter_codigo_convite(codigo)
+    
+    if convite:
+        user_id = session.get('user_id')
+        
+        # Registrar revogação
+        registrar_atividade(
+            user_id=user_id,
+            action='invite_code_revoked',
+            details={
+                'codigo': codigo,
+                'was_used': convite['used'],
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+        
+        revogar_codigo_convite(codigo)
         return jsonify({
             'success': True,
             'message': f'Código {codigo} revogado com sucesso'
@@ -746,24 +1402,256 @@ def revogar_convite(codigo):
     else:
         return jsonify({'error': 'Código não encontrado'}), 404
 
+@app.route('/api/admin/usuarios', methods=['GET'])
+@admin_required
+def listar_usuarios():
+    """Lista todos os usuários do sistema"""
+    usuarios_dict = obter_todos_usuarios()
+    usuarios = []
+    
+    for user_id, user_data in usuarios_dict.items():
+        usuarios.append({
+            'id': user_id,
+            'nome': user_data.get('nome', 'N/A'),
+            'email': user_data.get('email', 'N/A'),
+            'is_admin': user_data.get('is_admin', False),
+            'criado_em': user_data.get('criado_em', 'N/A')
+        })
+    
+    return jsonify({
+        'success': True,
+        'usuarios': usuarios,
+        'total': len(usuarios)
+    })
+
+@app.route('/api/admin/atividades/<user_id>', methods=['GET'])
+@admin_required
+def obter_atividades_usuario_route(user_id):
+    """Obtém o histórico de atividades de um usuário específico"""
+    limit = request.args.get('limit', 100, type=int)
+    
+    usuario = obter_usuario(user_id)
+    if not usuario:
+        return jsonify({'error': 'Usuário não encontrado'}), 404
+    
+    historico = obter_historico_usuario(user_id, limit)
+    total_atividades = obter_total_atividades_usuario(user_id)
+    
+    return jsonify({
+        'success': True,
+        'user_id': user_id,
+        'nome': usuario.get('nome', 'N/A'),
+        'email': usuario.get('email', 'N/A'),
+        'total_atividades': total_atividades,
+        'atividades': historico
+    })
+
+@app.route('/api/admin/atividades/exportar/<user_id>', methods=['GET'])
+@admin_required
+def exportar_atividades_usuario(user_id):
+    """Exporta atividades de um usuário em formato CSV"""
+    usuario = obter_usuario(user_id)
+    if not usuario:
+        return jsonify({'error': 'Usuário não encontrado'}), 404
+    
+    csv_data = exportar_atividades_csv(user_id)
+    
+    if csv_data:
+        return Response(
+            csv_data,
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=atividades_{user_id}.csv'}
+        )
+    else:
+        return jsonify({'error': 'Erro ao exportar dados'}), 500
+
+@app.route('/api/admin/atividades/exportar-todas', methods=['GET'])
+@admin_required
+def exportar_todas_atividades():
+    """Exporta todas as atividades em formato CSV"""
+    csv_data = exportar_atividades_csv()
+    
+    if csv_data:
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        return Response(
+            csv_data,
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=atividades_todas_{timestamp}.csv'}
+        )
+    else:
+        return jsonify({'error': 'Erro ao exportar dados'}), 500
+
+@app.route('/api/admin/atividades/limpar', methods=['POST'])
+@admin_required
+def limpar_atividades():
+    """Remove atividades antigas (padrão: 90 dias)"""
+    dias = request.json.get('dias', 90)
+    
+    deletados = limpar_atividades_antigas(dias)
+    
+    # Registra a limpeza
+    user_id = session.get('user_id')
+    registrar_atividade(
+        user_id=user_id,
+        action='activities_cleanup',
+        details={
+            'dias': dias,
+            'registros_deletados': deletados,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    )
+    
+    return jsonify({
+        'success': True,
+        'message': f'{deletados} registros removidos',
+        'deletados': deletados
+    })
+
+@app.route('/api/admin/estatisticas', methods=['GET'])
+@admin_required
+def obter_estatisticas():
+    """Retorna estatísticas gerais do sistema"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Total de atividades
+        cursor.execute('SELECT COUNT(*) FROM user_activities')
+        total_atividades = cursor.fetchone()[0]
+        
+        # Atividades por usuário
+        cursor.execute('''
+            SELECT user_id, COUNT(*) as count
+            FROM user_activities
+            GROUP BY user_id
+            ORDER BY count DESC
+        ''')
+        atividades_por_usuario = [{'user_id': row[0], 'count': row[1]} for row in cursor.fetchall()]
+        
+        # Atividades por tipo
+        cursor.execute('''
+            SELECT action, COUNT(*) as count
+            FROM user_activities
+            GROUP BY action
+            ORDER BY count DESC
+        ''')
+        atividades_por_tipo = [{'action': row[0], 'count': row[1]} for row in cursor.fetchall()]
+        
+        # Atividades nos últimos 7 dias
+        data_limite = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
+        cursor.execute('''
+            SELECT COUNT(*) FROM user_activities WHERE timestamp > ?
+        ''', (data_limite,))
+        atividades_7_dias = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'total_atividades': total_atividades,
+            'total_usuarios': len(USERS),
+            'atividades_7_dias': atividades_7_dias,
+            'atividades_por_usuario': atividades_por_usuario,
+            'atividades_por_tipo': atividades_por_tipo
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ===============================
 # ROTAS PRINCIPAIS
 # ===============================
 @app.route('/')
 @login_required
 def index():
-    # Verificar is_admin da sessão ou do usuário no USERS
+    # Verificar is_admin da sessão ou do banco de dados
     is_admin = session.get('is_admin', False)
     
-    # Se não estiver na sessão, verificar no USERS
+    # Se não estiver na sessão, verificar no banco
     if not is_admin:
         user_id = session.get('user_id')
-        user = USERS.get(user_id) if user_id in USERS else None
+        user = obter_usuario(user_id)
         is_admin = user.get('is_admin', False) if user else False
     
     return render_template('index.html', 
                          user_name=session.get('user_name', 'Usuário'),
                          is_admin=is_admin)
+
+# ===============================
+# ROTAS DE CREDENCIAIS GMAIL
+# ===============================
+@app.route('/api/gmail/credenciais', methods=['GET'])
+@login_required
+def obter_credenciais_gmail_route():
+    """Retorna as credenciais do Gmail do usuário (se salvas)"""
+    user_id = session.get('user_id')
+    credenciais = obter_credenciais_gmail(user_id)
+    
+    if credenciais:
+        return jsonify({
+            'success': True,
+            'gmail_email': credenciais['gmail_email'],
+            'has_password': True  # Não retorna a senha, apenas confirma que existe
+        })
+    else:
+        return jsonify({
+            'success': True,
+            'gmail_email': None,
+            'has_password': False
+        })
+
+@app.route('/api/gmail/credenciais', methods=['POST'])
+@login_required
+def salvar_credenciais_gmail_route():
+    """Salva as credenciais do Gmail do usuário"""
+    data = request.json
+    gmail_email = data.get('gmail_email', '').strip()
+    gmail_password = data.get('gmail_password', '')
+    
+    if not gmail_email or not gmail_password:
+        return jsonify({'error': 'Email e senha do Gmail são obrigatórios'}), 400
+    
+    user_id = session.get('user_id')
+    
+    if salvar_credenciais_gmail(user_id, gmail_email, gmail_password):
+        # Registrar salvamento
+        registrar_atividade(
+            user_id=user_id,
+            action='gmail_credentials_saved',
+            details={
+                'gmail_account': gmail_email,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Credenciais salvas com sucesso'
+        })
+    else:
+        return jsonify({'error': 'Erro ao salvar credenciais'}), 500
+
+@app.route('/api/gmail/credenciais', methods=['DELETE'])
+@login_required
+def remover_credenciais_gmail_route():
+    """Remove as credenciais do Gmail do usuário"""
+    user_id = session.get('user_id')
+    
+    if remover_credenciais_gmail(user_id):
+        # Registrar remoção
+        registrar_atividade(
+            user_id=user_id,
+            action='gmail_credentials_removed',
+            details={
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Credenciais removidas com sucesso'
+        })
+    else:
+        return jsonify({'error': 'Erro ao remover credenciais'}), 500
 
 @app.route('/api/organizar', methods=['POST'])
 @login_required
@@ -772,14 +1660,33 @@ def organizar():
     email_usuario = data.get('email')
     senha = data.get('senha')
     excluir_inbox = data.get('excluir_inbox', True)
+    user_id = session.get('user_id')
+    
+    # Se não foram fornecidas, tentar usar as credenciais salvas
+    if not email_usuario or not senha:
+        credenciais = obter_credenciais_gmail(user_id)
+        if credenciais:
+            email_usuario = email_usuario or credenciais['gmail_email']
+            senha = senha or credenciais['gmail_password']
     
     if not email_usuario or not senha:
         return jsonify({'error': 'Email e senha são obrigatórios'}), 400
     
+    # Registrar início da organização
+    registrar_atividade(
+        user_id=user_id,
+        action='email_organization_started',
+        details={
+            'gmail_account': email_usuario,
+            'excluir_inbox': excluir_inbox,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    )
+    
     # Executa em thread separada e envia progresso via WebSocket
     thread = threading.Thread(
         target=processar_organizacao,
-        args=(email_usuario, senha, excluir_inbox, request.sid if hasattr(request, 'sid') else None)
+        args=(email_usuario, senha, excluir_inbox, request.sid if hasattr(request, 'sid') else None, user_id)
     )
     thread.start()
     
@@ -792,12 +1699,31 @@ def verificar_duplicatas_route():
     email_usuario = data.get('email')
     senha = data.get('senha')
     
+    user_id = session.get('user_id')
+    
+    # Se não foram fornecidas, tentar usar as credenciais salvas
+    if not email_usuario or not senha:
+        credenciais = obter_credenciais_gmail(user_id)
+        if credenciais:
+            email_usuario = email_usuario or credenciais['gmail_email']
+            senha = senha or credenciais['gmail_password']
+    
     if not email_usuario or not senha:
         return jsonify({'error': 'Email e senha são obrigatórios'}), 400
     
+    # Registra início da verificação
+    registrar_atividade(
+        user_id=user_id,
+        action='duplicate_check_started',
+        details={
+            'gmail_account': email_usuario,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    )
+    
     thread = threading.Thread(
         target=processar_duplicatas,
-        args=(email_usuario, senha)
+        args=(email_usuario, senha, user_id)
     )
     thread.start()
     
@@ -818,8 +1744,10 @@ def limpar_logs():
 # ===============================
 # PROCESSAMENTO VIA WEBSOCKET
 # ===============================
-def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None):
+def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None, user_id=None):
     logs = []
+    emails_organizados = 0
+    categorias_criadas = []
     
     def adicionar_log(mensagem):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -883,9 +1811,14 @@ def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None):
                 categoria = classificar_email(e["assunto"], e["corpo"])
                 categorias_count[categoria] = categorias_count.get(categoria, 0) + 1
                 
+                # Rastreia categorias criadas
+                if categoria not in categorias_criadas:
+                    categorias_criadas.append(categoria)
+                
                 sucesso = mover_email(imap, e["id"], categoria, log_callback=adicionar_log)
                 if sucesso:
                     emails_movidos += 1
+                    emails_organizados += 1
                 else:
                     emails_com_erro += 1
                 
@@ -941,6 +1874,24 @@ def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None):
             adicionar_log("🔌 Conexão fechada")
         except:
             pass
+        
+        # Registra a conclusão da organização
+        if user_id:
+            registrar_atividade(
+                user_id=user_id,
+                action='email_organization_completed',
+                details={
+                    'gmail_account': email_usuario,
+                    'total_emails': total,
+                    'emails_organizados': emails_organizados,
+                    'emails_com_erro': emails_com_erro,
+                    'categorias_criadas': categorias_criadas,
+                    'categorias_count': categorias_count,
+                    'duplicatas_removidas': duplicatas,
+                    'excluiu_inbox': excluir_inbox,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
             
         adicionar_log(f"✅ Organização concluída! {emails_movidos}/{total} e-mails processados")
         atualizar_progresso(1.0, "✅ Concluído!")
@@ -955,8 +1906,20 @@ def processar_organizacao(email_usuario, senha, excluir_inbox, sid=None):
         error_msg = str(e)
         adicionar_log(f"❌ Erro: {error_msg}")
         emit_evento('erro', {'message': error_msg})
+        
+        # Registra o erro
+        if user_id:
+            registrar_atividade(
+                user_id=user_id,
+                action='email_organization_failed',
+                details={
+                    'gmail_account': email_usuario,
+                    'error': error_msg,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
 
-def processar_duplicatas(email_usuario, senha):
+def processar_duplicatas(email_usuario, senha, user_id=None):
     logs = []
     
     def adicionar_log(mensagem):
@@ -999,6 +1962,18 @@ def processar_duplicatas(email_usuario, senha):
         except:
             pass
         
+        # Registra a conclusão da verificação
+        if user_id:
+            registrar_atividade(
+                user_id=user_id,
+                action='duplicate_check_completed',
+                details={
+                    'gmail_account': email_usuario,
+                    'duplicatas_encontradas': duplicatas,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
+        
         atualizar_progresso(1.0, "✅ Concluído!")
         emit_evento('duplicatas_resultado', {'duplicatas': duplicatas})
         
@@ -1007,6 +1982,19 @@ def processar_duplicatas(email_usuario, senha):
         adicionar_log(f"❌ Erro crítico: {error_msg}")
         atualizar_progresso(0, "❌ Erro")
         emit_evento('erro', {'message': error_msg})
+        
+        # Registra o erro
+        if user_id:
+            registrar_atividade(
+                user_id=user_id,
+                action='duplicate_check_failed',
+                details={
+                    'gmail_account': email_usuario,
+                    'error': error_msg,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+            )
+        
         try:
             if 'imap' in locals():
                 imap.logout()

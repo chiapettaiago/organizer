@@ -110,6 +110,47 @@ body {
     cursor: pointer;
 }
 
+.credentials-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.btn-small {
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.3s;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.btn-secondary {
+    background: rgba(100, 150, 255, 0.8);
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: rgba(100, 150, 255, 1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(100, 150, 255, 0.4);
+}
+
+.btn-danger {
+    background: rgba(255, 80, 80, 0.8);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: rgba(255, 80, 80, 1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(255, 80, 80, 0.4);
+}
+
 .sidebar-info {
     background: rgba(255, 255, 255, 0.1);
     padding: 1.5rem;
@@ -139,6 +180,7 @@ body {
     border-radius: 12px;
     backdrop-filter: blur(10px);
     border: 2px solid rgba(245, 158, 11, 0.3);
+    margin-top: auto;
 }
 
 .sidebar-admin h4 {
@@ -160,6 +202,11 @@ body {
     font-size: 0.9rem;
     font-weight: 600;
     transition: all 0.3s ease;
+    margin-bottom: 0.5rem;
+}
+
+.admin-link:last-child {
+    margin-bottom: 0;
 }
 
 .admin-link:hover {

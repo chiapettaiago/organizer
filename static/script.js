@@ -375,7 +375,95 @@ function logout() {
     }
 }
 
+// ==================== CREDENCIAIS GMAIL ====================
+async function carregarCredenciais() {
+    try {
+        const response = await fetch('/api/gmail/credenciais');
+        const data = await response.json();
+        
+        if (data.success && data.gmail_email) {
+            document.getElementById('email').value = data.gmail_email;
+            // Não preenche a senha, mas mostra que existe
+            if (data.has_password) {
+                document.getElementById('senha').placeholder = '••••••••••••••••';
+                document.getElementById('btn-remover-creds').style.display = 'inline-block';
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao carregar credenciais:', error);
+    }
+}
+
+async function salvarCredenciais() {
+    const gmail_email = document.getElementById('email').value;
+    const gmail_password = document.getElementById('senha').value;
+    
+    if (!gmail_email || !gmail_password) {
+        alert('⚠️ Preencha o e-mail e a senha antes de salvar!');
+        return;
+    }
+    
+    if (!confirm('💾 Deseja salvar estas credenciais para uso futuro?\n\nIsso permitirá que você não precise digitá-las novamente.')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/gmail/credenciais', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                gmail_email: gmail_email,
+                gmail_password: gmail_password
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✅ Credenciais salvas com sucesso!');
+            document.getElementById('btn-remover-creds').style.display = 'inline-block';
+            document.getElementById('senha').placeholder = '••••••••••••••••';
+        } else {
+            alert('❌ Erro ao salvar credenciais: ' + (data.error || 'Erro desconhecido'));
+        }
+    } catch (error) {
+        console.error('Erro ao salvar credenciais:', error);
+        alert('❌ Erro ao salvar credenciais. Veja o console para detalhes.');
+    }
+}
+
+async function removerCredenciais() {
+    if (!confirm('🗑️ Deseja realmente remover as credenciais salvas?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/gmail/credenciais', {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✅ Credenciais removidas com sucesso!');
+            document.getElementById('email').value = '';
+            document.getElementById('senha').value = '';
+            document.getElementById('senha').placeholder = 'Senha de aplicativo';
+            document.getElementById('btn-remover-creds').style.display = 'none';
+        } else {
+            alert('❌ Erro ao remover credenciais: ' + (data.error || 'Erro desconhecido'));
+        }
+    } catch (error) {
+        console.error('Erro ao remover credenciais:', error);
+        alert('❌ Erro ao remover credenciais. Veja o console para detalhes.');
+    }
+}
+
 // ==================== INIT ====================
 document.addEventListener('DOMContentLoaded', function() {
     console.log('MailNest carregado!');
+    // Carregar credenciais salvas ao iniciar
+    carregarCredenciais();
 });

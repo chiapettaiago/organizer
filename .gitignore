@@ -16,3 +16,10 @@ ENV/
 .streamlit/secrets.toml
 emails_organizados/
 *.log
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+user_activity.db
+organizer.db
