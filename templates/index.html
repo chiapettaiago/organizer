@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MailNest - Organizador de E-mails</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div class="logo">
+                <h1>📮 MailNest</h1>
+                <p class="subtitle">Organize seus e-mails com inteligência</p>
+            </div>
+
+            <div class="credentials">
+                <h3>🔐 Credenciais do Gmail</h3>
+                <div class="form-group">
+                    <label for="email">E-mail:</label>
+                    <input type="email" id="email" placeholder="seu.email@gmail.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="senha">Senha de App:</label>
+                    <input type="password" id="senha" placeholder="Senha de aplicativo" required>
+                </div>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="excluir_inbox" checked>
+                    <label for="excluir_inbox">Remover da INBOX após organizar</label>
+                </div>
+            </div>
+
+            <div class="sidebar-info">
+                <h4>ℹ️ Como usar</h4>
+                <ul>
+                    <li>Configure suas credenciais acima</li>
+                    <li>Use uma senha de aplicativo do Gmail</li>
+                    <li>Clique em "Organizar Agora" para iniciar</li>
+                    <li>Acompanhe o progresso em tempo real</li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            <!-- HEADER -->
+            <header class="header">
+                <h2>Painel de Controle</h2>
+                <div class="metrics">
+                    <div class="metric-card">
+                        <div class="metric-value" id="metric-total">0</div>
+                        <div class="metric-label">E-mails Organizados</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="metric-duplicatas">0</div>
+                        <div class="metric-label">Duplicatas Removidas</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="metric-categorias">0</div>
+                        <div class="metric-label">Categorias Criadas</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="metric-status">⏹️</div>
+                        <div class="metric-label">Status</div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- TABS -->
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab('executar')">⚡ Executar</button>
+                <button class="tab-button" onclick="openTab('logs')">📋 Logs</button>
+                <button class="tab-button" onclick="openTab('ajuda')">❓ Ajuda</button>
+            </div>
+
+            <!-- TAB: EXECUTAR -->
+            <div id="executar" class="tab-content active">
+                <div class="actions">
+                    <button class="btn btn-primary" onclick="organizarEmails()">
+                        📧 Organizar Agora
+                    </button>
+                    <button class="btn btn-secondary" onclick="verificarDuplicatas()">
+                        🔍 Verificar Duplicatas
+                    </button>
+                </div>
+
+                <div class="progress-section" id="progress-section" style="display: none;">
+                    <div class="progress-header">
+                        <span id="progress-text">Aguardando...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+
+                <div class="live-logs" id="live-logs">
+                    <h3>📡 Logs em Tempo Real</h3>
+                    <div class="logs-container" id="logs-container">
+                        <p class="log-empty">Nenhuma operação em andamento</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB: LOGS -->
+            <div id="logs" class="tab-content">
+                <div class="logs-header">
+                    <h3>📜 Histórico de Logs</h3>
+                    <button class="btn btn-danger btn-sm" onclick="limparLogs()">🗑️ Limpar Logs</button>
+                </div>
+                <div class="logs-container" id="historico-logs">
+                    <p class="log-empty">Nenhum log disponível</p>
+                </div>
+            </div>
+
+            <!-- TAB: AJUDA -->
+            <div id="ajuda" class="tab-content">
+                <div class="help-content">
+                    <h3>🔧 Configuração do Gmail</h3>
+                    <ol>
+                        <li>Acesse <a href="https://myaccount.google.com/security" target="_blank">Configurações de Segurança do Google</a></li>
+                        <li>Ative a <strong>Verificação em duas etapas</strong></li>
+                        <li>Acesse <strong>Senhas de app</strong></li>
+                        <li>Crie uma nova senha para "MailNest"</li>
+                        <li>Use essa senha no campo "Senha de App"</li>
+                    </ol>
+
+                    <h3>📁 Categorias Automáticas</h3>
+                    <ul>
+                        <li><strong>Faturas:</strong> Boletos, pagamentos, notas fiscais</li>
+                        <li><strong>Trabalho:</strong> Projetos, relatórios, reuniões</li>
+                        <li><strong>Pessoal:</strong> Convites, eventos, família</li>
+                        <li><strong>Marketing:</strong> Promoções, newsletters, ofertas</li>
+                        <li><strong>Sistema:</strong> Alertas, erros, notificações</li>
+                        <li><strong>Positivos:</strong> E-mails com sentimento positivo</li>
+                        <li><strong>Problemas:</strong> E-mails com sentimento negativo</li>
+                        <li><strong>Neutros:</strong> Outros e-mails</li>
+                    </ul>
+
+                    <h3>⚡ Funcionalidades</h3>
+                    <ul>
+                        <li>✅ Organização automática por categoria</li>
+                        <li>✅ Análise de sentimento com IA</li>
+                        <li>✅ Detecção e remoção de duplicatas</li>
+                        <li>✅ Progresso em tempo real</li>
+                        <li>✅ Logs detalhados de cada operação</li>
+                        <li>✅ Interface responsiva e moderna</li>
+                    </ul>
+
+                    <h3>⚠️ Importante</h3>
+                    <ul>
+                        <li>Nunca compartilhe sua senha de aplicativo</li>
+                        <li>O processo pode levar alguns minutos dependendo da quantidade de e-mails</li>
+                        <li>Recomendamos fazer backup antes da primeira execução</li>
+                        <li>A verificação de duplicatas é limitada aos últimos 1000 e-mails</li>
+                    </ul>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
