@@ -368,6 +368,13 @@ function fecharErroModal() {
     }
 }
 
+// ==================== LOGOUT ====================
+function logout() {
+    if (confirm('Deseja realmente sair?')) {
+        window.location.href = '/logout';
+    }
+}
+
 // ==================== INIT ====================
 document.addEventListener('DOMContentLoaded', function() {
     console.log('MailNest carregado!');

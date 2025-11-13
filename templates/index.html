@@ -41,13 +41,43 @@
                     <li>Acompanhe o progresso em tempo real</li>
                 </ul>
             </div>
+
+            {% if is_admin %}
+            <div class="sidebar-admin">
+                <h4>👑 Administração</h4>
+                <a href="/admin/convites" class="admin-link">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 1L3 5V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V5L12 1ZM10 17L6 13L7.41 11.59L10 14.17L16.59 7.58L18 9L10 17Z" fill="currentColor"/>
+                    </svg>
+                    Gerenciar Códigos de Convite
+                </a>
+            </div>
+            {% endif %}
         </aside>
 
         <!-- MAIN CONTENT -->
         <main class="main-content">
             <!-- HEADER -->
             <header class="header">
-                <h2>Painel de Controle</h2>
+                <div class="header-left">
+                    <h2>Painel de Controle</h2>
+                </div>
+                <div class="header-right">
+                    <div class="user-info">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 12C14.21 12 16 10.21 16 8C16 5.79 14.21 4 12 4C9.79 4 8 5.79 8 8C8 10.21 9.79 12 12 12ZM12 14C9.33 14 4 15.34 4 18V20H20V18C20 15.34 14.67 14 12 14Z" fill="currentColor"/>
+                        </svg>
+                        <span class="user-name">{{ user_name }}</span>
+                    </div>
+                    <button class="logout-btn" onclick="logout()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <path d="M17 7L15.59 8.41L18.17 11H8V13H18.17L15.59 15.58L17 17L22 12L17 7ZM4 5H12V3H4C2.9 3 2 3.9 2 5V19C2 20.1 2.9 21 4 21H12V19H4V5Z" fill="currentColor"/>
+                        </svg>
+                        Sair
+                    </button>
+                </div>
+            </header>
+            <div class="metrics-bar">
                 <div class="metrics">
                     <div class="metric-card">
                         <div class="metric-value" id="metric-total">0</div>
@@ -66,7 +96,7 @@
                         <div class="metric-label">Status</div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <!-- TABS -->
             <div class="tabs">
@@ -77,6 +107,7 @@
 
             <!-- TAB: EXECUTAR -->
             <div id="executar" class="tab-content active">
+                <!-- Debug: is_admin = {{ is_admin }} -->
                 <div class="actions">
                     <button class="btn btn-primary" onclick="organizarEmails()">
                         📧 Organizar Agora
@@ -84,6 +115,16 @@
                     <button class="btn btn-secondary" onclick="verificarDuplicatas()">
                         🔍 Verificar Duplicatas
                     </button>
+                    {% if is_admin %}
+                    <a href="/admin/convites" class="btn btn-admin">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <path d="M12 1L3 5V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V5L12 1ZM10 17L6 13L7.41 11.59L10 14.17L16.59 7.58L18 9L10 17Z" fill="currentColor"/>
+                        </svg>
+                        Gerenciar Convites
+                    </a>
+                    {% else %}
+                    <!-- Debug: Botão admin NÃO exibido porque is_admin = {{ is_admin }} -->
+                    {% endif %}
                 </div>
 
                 <div class="progress-section" id="progress-section" style="display: none;">

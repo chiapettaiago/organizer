@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, Response
+from flask import Flask, render_template, request, jsonify, session, Response, redirect, url_for, flash
 from flask_socketio import SocketIO, emit
 import imaplib
 import email
@@ -12,10 +12,57 @@ import traceback
 import json
 from functools import wraps
 import secrets
+import hashlib
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(16)
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(hours=24)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ===============================
+# USUÁRIOS (Em produção, use banco de dados)
+# ===============================
+# Senha: hash de 'admin123'
+USERS = {
+    'admin': {
+        'password': hashlib.sha256('admin123'.encode()).hexdigest(),
+        'name': 'Administrador',
+        'is_admin': True
+    }
+}
+
+# ===============================
+# CÓDIGOS DE CONVITE
+# ===============================
+INVITE_CODES = {}  # {codigo: {'created_by': username, 'created_at': datetime, 'used': False, 'used_by': None}}
+
+def gerar_codigo_convite(username):
+    """Gera um código de convite único"""
+    codigo = secrets.token_urlsafe(16)[:12].upper()
+    INVITE_CODES[codigo] = {
+        'created_by': username,
+        'created_at': datetime.datetime.now(),
+        'used': False,
+        'used_by': None
+    }
+    return codigo
+
+def validar_codigo_convite(codigo):
+    """Valida se o código existe e não foi usado"""
+    codigo = codigo.upper().strip()
+    if codigo in INVITE_CODES and not INVITE_CODES[codigo]['used']:
+        return True
+    return False
+
+def marcar_codigo_usado(codigo, username):
+    """Marca um código como usado"""
+    codigo = codigo.upper().strip()
+    if codigo in INVITE_CODES:
+        INVITE_CODES[codigo]['used'] = True
+        INVITE_CODES[codigo]['used_by'] = username
+        INVITE_CODES[codigo]['used_at'] = datetime.datetime.now()
+        return True
+    return False
 
 # ===============================
 # CONFIGURAÇÕES
@@ -41,6 +88,50 @@ def emit_evento(evento, dados):
         socketio.sleep(0)  # Permite que o evento seja processado
     except Exception as e:
         print(f"Erro ao emitir evento {evento}: {e}")
+
+# ===============================
+# DECORADORES DE AUTENTICAÇÃO
+# ===============================
+def login_required(f):
+    """Decorator para rotas que requerem login"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            if request.is_json:
+                return jsonify({'error': 'Não autenticado', 'redirect': '/login'}), 401
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    """Decorator para rotas que requerem privilégios de administrador"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            if request.is_json:
+                return jsonify({'error': 'Não autenticado', 'redirect': '/login'}), 401
+            return redirect(url_for('login'))
+        
+        # Verificar se é convidado (não pode ser admin)
+        if session.get('is_guest', False):
+            if request.is_json:
+                return jsonify({'error': 'Acesso negado. Apenas administradores.'}), 403
+            flash('Acesso negado. Apenas administradores.', 'error')
+            return redirect(url_for('index'))
+        
+        # Verificar se tem flag is_admin na sessão ou no USERS
+        is_admin_session = session.get('is_admin', False)
+        user = USERS.get(session.get('user_id'))
+        is_admin_user = user.get('is_admin', False) if user else False
+        
+        if not (is_admin_session or is_admin_user):
+            if request.is_json:
+                return jsonify({'error': 'Acesso negado. Apenas administradores.'}), 403
+            flash('Acesso negado. Apenas administradores.', 'error')
+            return redirect(url_for('index'))
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 # ===============================
 # FUNÇÕES AUXILIARES
@@ -422,13 +513,260 @@ def verificar_e_remover_duplicatas(imap, log_callback=None, progress_callback=No
         return 0
 
 # ===============================
-# ROTAS FLASK
+# ROTAS DE AUTENTICAÇÃO
+# ===============================
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        # Se já está logado, redireciona para index
+        if 'user_id' in session:
+            return redirect(url_for('index'))
+        return render_template('login.html')
+    
+    # POST - processar login
+    data = request.json if request.is_json else request.form
+    login_type = data.get('login_type', 'credentials')  # 'credentials' ou 'invite'
+    
+    if login_type == 'invite':
+        # Login com código de convite
+        invite_code = data.get('invite_code', '').strip()
+        
+        if not invite_code:
+            if request.is_json:
+                return jsonify({'error': 'Código de convite é obrigatório'}), 400
+            flash('Código de convite é obrigatório', 'error')
+            return redirect(url_for('login'))
+        
+        if validar_codigo_convite(invite_code):
+            # Código válido - redirecionar para página de registro
+            codigo_upper = invite_code.upper()
+            
+            # Armazenar código na sessão temporariamente para a página de registro
+            session['pending_invite_code'] = codigo_upper
+            
+            if request.is_json:
+                return jsonify({
+                    'success': True,
+                    'message': 'Código validado! Complete seu cadastro.',
+                    'redirect': url_for('registro_page')
+                })
+            return redirect(url_for('registro_page'))
+        else:
+            if request.is_json:
+                return jsonify({'error': 'Código de convite inválido ou já utilizado'}), 401
+            flash('Código de convite inválido ou já utilizado', 'error')
+            return redirect(url_for('login'))
+    
+    else:
+        # Login com credenciais normais
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        if not username or not password:
+            if request.is_json:
+                return jsonify({'error': 'Usuário e senha são obrigatórios'}), 400
+            flash('Usuário e senha são obrigatórios', 'error')
+            return redirect(url_for('login'))
+        
+        # Verificar credenciais
+        user = USERS.get(username)
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        if user and user['password'] == password_hash:
+            # Login bem-sucedido
+            session.permanent = True
+            session['user_id'] = username
+            session['user_name'] = user['name']
+            session['is_guest'] = False
+            session['is_admin'] = user.get('is_admin', False)
+            
+            if request.is_json:
+                return jsonify({
+                    'success': True,
+                    'message': 'Login realizado com sucesso',
+                    'redirect': url_for('index')
+                })
+            return redirect(url_for('index'))
+        else:
+            # Credenciais inválidas
+            if request.is_json:
+                return jsonify({'error': 'Usuário ou senha inválidos'}), 401
+            flash('Usuário ou senha inválidos', 'error')
+            return redirect(url_for('login'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Logout realizado com sucesso', 'success')
+    return redirect(url_for('login'))
+
+# ===============================
+# ROTAS DE REGISTRO
+# ===============================
+@app.route('/registro')
+def registro_page():
+    """Página de registro para usuários com código de convite"""
+    # Verificar se há código de convite pendente na sessão
+    invite_code = session.get('pending_invite_code')
+    if not invite_code:
+        flash('Código de convite não encontrado. Faça login novamente.', 'error')
+        return redirect(url_for('login'))
+    
+    return render_template('registro.html', invite_code=invite_code)
+
+@app.route('/registrar', methods=['POST'])
+def registrar():
+    """Processa o registro de novo usuário via código de convite"""
+    data = request.json if request.is_json else request.form
+    
+    nome = data.get('nome', '').strip()
+    email = data.get('email', '').strip().lower()
+    senha = data.get('senha', '')
+    invite_code = data.get('invite_code', '').strip()
+    
+    # Validações
+    if not nome or not email or not senha or not invite_code:
+        return jsonify({'error': 'Todos os campos são obrigatórios'}), 400
+    
+    if len(senha) < 6:
+        return jsonify({'error': 'A senha deve ter no mínimo 6 caracteres'}), 400
+    
+    # Validar formato de email
+    import re
+    email_regex = r'^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    if not re.match(email_regex, email):
+        return jsonify({'error': 'E-mail inválido'}), 400
+    
+    # Verificar se o email já existe
+    if email in USERS:
+        return jsonify({'error': 'Este e-mail já está cadastrado'}), 400
+    
+    # Verificar se o código de convite está na sessão
+    if session.get('pending_invite_code') != invite_code.upper():
+        return jsonify({'error': 'Código de convite inválido'}), 400
+    
+    # Validar código novamente
+    if not validar_codigo_convite(invite_code):
+        return jsonify({'error': 'Código de convite inválido ou já utilizado'}), 400
+    
+    # Criar novo usuário
+    password_hash = hashlib.sha256(senha.encode()).hexdigest()
+    USERS[email] = {
+        'password': password_hash,
+        'name': nome,
+        'is_admin': False,
+        'created_at': datetime.datetime.now(),
+        'created_via': 'invite',
+        'invite_code': invite_code.upper()
+    }
+    
+    # Marcar código como usado
+    marcar_codigo_usado(invite_code, email)
+    
+    # Fazer login automático
+    session.permanent = True
+    session['user_id'] = email
+    session['user_name'] = nome
+    session['is_guest'] = False
+    session['is_admin'] = False
+    
+    # Limpar código pendente
+    session.pop('pending_invite_code', None)
+    
+    if request.is_json:
+        return jsonify({
+            'success': True,
+            'message': 'Conta criada com sucesso!',
+            'redirect': url_for('index')
+        })
+    return redirect(url_for('index'))
+
+# ===============================
+# ROTAS DE CONVITES (ADMIN)
+# ===============================
+@app.route('/admin/convites')
+@admin_required
+def admin_convites():
+    """Página de gerenciamento de códigos de convite"""
+    return render_template('admin_convites.html', 
+                         user_name=session.get('user_name', 'Admin'),
+                         convites=INVITE_CODES)
+
+@app.route('/api/admin/gerar-convite', methods=['POST'])
+@admin_required
+def gerar_convite():
+    """Gera um novo código de convite"""
+    try:
+        codigo = gerar_codigo_convite(session.get('user_id'))
+        return jsonify({
+            'success': True,
+            'codigo': codigo,
+            'message': f'Código {codigo} gerado com sucesso!'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Erro ao gerar código: {str(e)}'}), 500
+
+@app.route('/api/admin/listar-convites', methods=['GET'])
+@admin_required
+def listar_convites():
+    """Lista todos os códigos de convite"""
+    convites = []
+    for codigo, info in INVITE_CODES.items():
+        convites.append({
+            'codigo': codigo,
+            'criado_por': info['created_by'],
+            'criado_em': info['created_at'].strftime('%d/%m/%Y %H:%M'),
+            'usado': info['used'],
+            'usado_por': info.get('used_by'),
+            'usado_em': info.get('used_at').strftime('%d/%m/%Y %H:%M') if info.get('used_at') else None
+        })
+    
+    # Ordenar por data de criação (mais recentes primeiro)
+    convites.sort(key=lambda x: INVITE_CODES[x['codigo']]['created_at'], reverse=True)
+    
+    return jsonify({
+        'success': True,
+        'convites': convites,
+        'total': len(convites),
+        'usados': sum(1 for c in INVITE_CODES.values() if c['used']),
+        'disponiveis': sum(1 for c in INVITE_CODES.values() if not c['used'])
+    })
+
+@app.route('/api/admin/revogar-convite/<codigo>', methods=['DELETE'])
+@admin_required
+def revogar_convite(codigo):
+    """Revoga (remove) um código de convite"""
+    codigo = codigo.upper().strip()
+    if codigo in INVITE_CODES:
+        del INVITE_CODES[codigo]
+        return jsonify({
+            'success': True,
+            'message': f'Código {codigo} revogado com sucesso'
+        })
+    else:
+        return jsonify({'error': 'Código não encontrado'}), 404
+
+# ===============================
+# ROTAS PRINCIPAIS
 # ===============================
 @app.route('/')
+@login_required
 def index():
-    return render_template('index.html')
+    # Verificar is_admin da sessão ou do usuário no USERS
+    is_admin = session.get('is_admin', False)
+    
+    # Se não estiver na sessão, verificar no USERS
+    if not is_admin:
+        user_id = session.get('user_id')
+        user = USERS.get(user_id) if user_id in USERS else None
+        is_admin = user.get('is_admin', False) if user else False
+    
+    return render_template('index.html', 
+                         user_name=session.get('user_name', 'Usuário'),
+                         is_admin=is_admin)
 
 @app.route('/api/organizar', methods=['POST'])
+@login_required
 def organizar():
     data = request.json
     email_usuario = data.get('email')
@@ -448,6 +786,7 @@ def organizar():
     return jsonify({'message': 'Organização iniciada'}), 202
 
 @app.route('/api/verificar-duplicatas', methods=['POST'])
+@login_required
 def verificar_duplicatas_route():
     data = request.json
     email_usuario = data.get('email')
@@ -465,10 +804,12 @@ def verificar_duplicatas_route():
     return jsonify({'message': 'Verificação iniciada'}), 202
 
 @app.route('/api/logs')
+@login_required
 def get_logs():
     return jsonify({'logs': execucoes_logs[-100:]})
 
 @app.route('/api/limpar-logs', methods=['POST'])
+@login_required
 def limpar_logs():
     global execucoes_logs
     execucoes_logs = []

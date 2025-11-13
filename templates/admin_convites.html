@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciar Convites - MailNest Admin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
+</head>
+<body>
+    <div class="admin-container">
+        <!-- HEADER -->
+        <header class="admin-header">
+            <div class="header-left">
+                <h1>🎟️ Gerenciamento de Códigos de Convite</h1>
+                <p>Crie e gerencie códigos de acesso temporário</p>
+            </div>
+            <div class="header-right">
+                <div class="user-info">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 12C14.21 12 16 10.21 16 8C16 5.79 14.21 4 12 4C9.79 4 8 5.79 8 8C8 10.21 9.79 12 12 12ZM12 14C9.33 14 4 15.34 4 18V20H20V18C20 15.34 14.67 14 12 14Z" fill="currentColor"/>
+                    </svg>
+                    <span class="user-name">{{ user_name }}</span>
+                </div>
+                <a href="/" class="btn-voltar">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                        <path d="M20 11H7.83L13.42 5.41L12 4L4 12L12 20L13.41 18.59L7.83 13H20V11Z" fill="currentColor"/>
+                    </svg>
+                    Voltar ao Dashboard
+                </a>
+            </div>
+        </header>
+
+        <!-- STATS -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon total">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                        <path d="M19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19V5C21 3.9 20.1 3 19 3ZM9 17H7V10H9V17ZM13 17H11V7H13V17ZM17 17H15V13H17V17Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-total">0</div>
+                    <div class="stat-label">Total de Códigos</div>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-icon disponivel">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-disponiveis">0</div>
+                    <div class="stat-label">Disponíveis</div>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-icon usado">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 16.17L4.83 12L3.41 13.41L9 19L21 7L19.59 5.59L9 16.17Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-value" id="stat-usados">0</div>
+                    <div class="stat-label">Já Utilizados</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AÇÕES -->
+        <div class="actions-section">
+            <button class="btn-primary" onclick="gerarCodigo()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M19 13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/>
+                </svg>
+                Gerar Novo Código
+            </button>
+            <button class="btn-secondary" onclick="atualizarLista()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4C7.58 4 4.01 7.58 4.01 12C4.01 16.42 7.58 20 12 20C15.73 20 18.84 17.45 19.73 14H17.65C16.83 16.33 14.61 18 12 18C8.69 18 6 15.31 6 12C6 8.69 8.69 6 12 6C13.66 6 15.14 6.69 16.22 7.78L13 11H20V4L17.65 6.35Z" fill="currentColor"/>
+                </svg>
+                Atualizar
+            </button>
+        </div>
+
+        <!-- TABELA DE CÓDIGOS -->
+        <div class="table-section">
+            <h2>📋 Códigos de Convite</h2>
+            <div class="table-container">
+                <table id="convites-table">
+                    <thead>
+                        <tr>
+                            <th>Código</th>
+                            <th>Criado Por</th>
+                            <th>Data de Criação</th>
+                            <th>Status</th>
+                            <th>Usado Por</th>
+                            <th>Data de Uso</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="convites-tbody">
+                        <tr class="empty-state">
+                            <td colspan="7">
+                                <div class="empty-message">
+                                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
+                                        <path d="M20 6H12L10 4H4C2.9 4 2.01 4.9 2.01 6L2 18C2 19.1 2.9 20 4 20H20C21.1 20 22 19.1 22 18V8C22 6.9 21.1 6 20 6ZM20 18H4V6H9.17L11.17 8H20V18ZM6 12H18V14H6V12ZM6 16H14V18H6V16Z" fill="currentColor"/>
+                                    </svg>
+                                    <p>Nenhum código de convite gerado ainda</p>
+                                    <small>Clique em "Gerar Novo Código" para criar o primeiro</small>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- MODAL DE CÓDIGO GERADO -->
+        <div id="codigo-modal" class="modal">
+            <div class="modal-content success">
+                <div class="modal-header">
+                    <h3>✅ Código Gerado com Sucesso!</h3>
+                    <button class="close-btn" onclick="fecharModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p>Compartilhe este código com o usuário:</p>
+                    <div class="codigo-display">
+                        <code id="codigo-gerado">XXXXXX</code>
+                        <button class="btn-copy" onclick="copiarCodigo()">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                                <path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/>
+                            </svg>
+                            Copiar
+                        </button>
+                    </div>
+                    <div class="codigo-info">
+                        <p><strong>ℹ️ Importante:</strong></p>
+                        <ul>
+                            <li>Este código pode ser usado apenas uma vez</li>
+                            <li>Após o uso, será marcado como "Utilizado"</li>
+                            <li>Você pode revogar códigos não utilizados a qualquer momento</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+</html>
